@@ -61,6 +61,42 @@ def load_generic_audio(directory, sample_rate):
         yield audio, filename, category_id
 
 
+def smooth_even_rate(deltas):
+    def moving_average(a, n=3):
+        ret = np.cumsum(a, dtype=float)
+        ret[n:] = ret[n:] - ret[:-n]
+        return ret[n - 1:] / n
+    smoothing_kernel = 1000
+    rates = 1000. / moving_average(deltas, smoothing_kernel)
+    available_timestamps = np.cumsum(deltas)[smoothing_kernel // 2: -smoothing_kernel // 2]
+    available_timestamps -= available_timestamps[0]
+    required_timestamps = np.arange(0, max(available_timestamps), np.mean(deltas))
+
+    available_timstamp_idx = 0
+    result = np.ones(required_timestamps.shape) * -1
+    from tqdm import tqdm
+    for i in tqdm(range(len(required_timestamps))):
+        while available_timestamps[available_timstamp_idx] < required_timestamps[i]:
+            available_timstamp_idx += 1
+        if np.isclose(available_timestamps[available_timstamp_idx], required_timestamps[i]):
+            next_value = rates[available_timstamp_idx]
+        else:
+            next_value = np.mean(rates[available_timstamp_idx - 1:available_timstamp_idx])
+    # print(\"av_ts_idx: {}, av_ts[idx]: {}, req_ts[i]: {}, next_val: {}\".format(available_timstamp_idx,
+    #      available_timestamps[available_timstamp_idx],
+    #      required_timestamps[i],
+    #     next_value))
+    result[i] = next_value
+    return result
+
+
+def load_generic_trace(directory, sample_rate):
+    '''Generator that yields trace from the directory.'''
+    trace = np.load(os.path.join(directory, "20040107-000000-0.npy"))
+    processed_trace = smooth_even_rate(trace)
+    yield processed_trace, "20040107-000000-0.npy", None
+
+
 def trim_silence(audio, threshold, frame_length=2048):
     '''Removes silence at the beginning and end of a sample.'''
     if audio.size < frame_length:
@@ -120,7 +156,7 @@ class AudioReader(object):
         # TODO Find a better way to check this.
         # Checking inside the AudioReader's thread makes it hard to terminate
         # the execution of the script, so we do it in the constructor for now.
-        files = find_files(audio_dir)
+        files = find_files(audio_dir, pattern='*.npy')
         if not files:
             raise ValueError("No audio files found in '{}'.".format(audio_dir))
         if self.gc_enabled and not_all_have_id(files):
@@ -154,7 +190,7 @@ class AudioReader(object):
         stop = False
         # Go through the dataset multiple times
         while not stop:
-            iterator = load_generic_audio(self.audio_dir, self.sample_rate)
+            iterator = load_generic_trace(self.audio_dir, self.sample_rate)
             for audio, filename, category_id in iterator:
                 if self.coord.should_stop():
                     stop = True
